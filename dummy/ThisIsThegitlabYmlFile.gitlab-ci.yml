@@ -1,0 +1,126 @@
+# Start the pipeline if release branch
+workflow:
+  rules:
+    - if: $CI_COMMIT_REF_NAME =~ /^rel_be_jsb_\d+.\d+$/
+
+# define stage sequence
+stages:
+  - prepare
+  - build
+  - publish
+  - deliver
+  - test
+  - clear
+
+# define Build & Bin server paths
+variables:
+  BUILD_SVR_PATH: "C:\\Users\\commonuser\\Documents\\mss-academy-projects\\specialization\\build_svr"
+  BIN_REPO_SVR_PATH: "C:\\Users\\commonuser\\Documents\\mss-academy-projects\\specialization\\bin_repo_svr"
+  TARGET_USER: "l1ds"
+  TARGET_HOST: "192.168.0.8" #depends on ip address
+
+copy_to_local_folder:
+  # Prepping the environment
+  stage: prepare
+
+  script:
+    - Write-Host "----------------Executing copy"-ForegroundColor Yellow
+    # remove internal release label folder from Bin repo server environment if exist
+    - |
+      if (Test-Path "$BIN_REPO_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME") {
+        Remove-Item -Path "$BIN_REPO_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME" -Recurse -Force;
+      }
+    # remove internal release label folder from Build server environment if exist
+    - |
+      if (Test-Path "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME") {
+        Remove-Item -Path "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME" -Recurse -Force;
+      }
+    # create internal release label folder in Build server and copy the cloned repository to internal release label folder
+    - |
+      echo "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME"
+    - |
+      New-Item -Path "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME" -ItemType Directory -Force;
+      Copy-Item -Path "$CI_PROJECT_DIR\*" -Destination "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME" -Recurse;
+    - Write-Host "----------------Finished copy" -ForegroundColor Green
+
+build_jar_file:
+  stage: build
+
+  script:
+    - Write-Host "----------------Beginning build" -ForegroundColor Yellow
+    # change working directory to Build server folder and run build.ps1
+    - cd "$BUILD_SVR_PATH\\$CI_PROJECT_NAME\\$CI_COMMIT_REF_NAME"
+    - "& $BUILD_SVR_PATH\\$CI_PROJECT_NAME\\$CI_COMMIT_REF_NAME\\build\\build.ps1"
+    # remove tar ball if it exist in build/<repo name>/<internal release label> folder
+    - |
+      if(Test-Path "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar") {
+        Remove-Item -Path "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar" -Force
+      }
+    # create a tar ball of the required folders
+    - tar -cf "$CI_COMMIT_REF_NAME.tar" "bin" "deploy" "config" "test"
+    - Write-Host "----------------Finished build" -ForegroundColor Green
+
+copy_to_bin_repo:
+  stage: publish
+  script:
+    - Write-Host "----------------Beginning publish" -ForegroundColor Yellow
+    # remove tar ball if it exist in Bin_repo_svr/<repo name>/<internal release label> folder working dir
+    - |
+      if(Test-Path "$BIN_REPO_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar") {
+        Remove-Item -Path "$BIN_REPO_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar";
+      }
+    # create a new folder based on the internal release label in Bin repo server
+    - New-Item -Path "$BIN_REPO_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME" -ItemType Directory -Force;
+    # copy tar ball from the Build/<repo name>/<internal release label> folder to Bin_repo_svr/<repo name>/<internal release label> folder
+    - Copy-Item -Path "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar" -Destination "$BIN_REPO_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar";
+    # list the content of the tar ball
+    - tar -tf "$BUILD_SVR_PATH\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\$CI_COMMIT_REF_NAME.tar";
+    - Write-Host "----------------Finished publish" -ForegroundColor Green
+
+setup_ssh:
+  stage: deliver
+  script:
+    - Write-Host "----------------Beginning deliver" -ForegroundColor Yellow
+    # secure copy protocol the tar ball from the bin_repo_svr/<repo name>/<internal release label> folder into l1ds group3/<repo name>/<internal release label> folder
+    - whoami
+    - Write-Host ${TARGET_USER}@${TARGET_HOST}
+    - scp -v "$BIN_REPO_SVR_PATH\\$CI_PROJECT_NAME\\$CI_COMMIT_REF_NAME\\$CI_COMMIT_REF_NAME.tar" "${TARGET_USER}@${TARGET_HOST}:C:\\Users\\l1ds\\group3\\$CI_PROJECT_NAME\";
+
+untar:
+  stage: deliver
+  script:
+    # create a new folder in l1ds based on the internal release label and extract the tar ball into the folder.
+    # Run the deploy.ps1
+    - |
+      ssh "${TARGET_USER}@${TARGET_HOST}" "New-Item -Path 'C:\Users\l1ds\group3\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME' -ItemType Directory -Force;
+      tar -xvf 'C:\Users\l1ds\group3\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME.tar' -C 'C:\Users\l1ds\group3\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME';
+      powershell -command 'C:\Users\l1ds\group3\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\deploy\deploy.ps1' -CI_COMMIT_REF_NAME ${CI_COMMIT_REF_NAME} -CI_PROJECT_NAME ${CI_PROJECT_NAME};"
+    - Write-Host "----------------Finished deliver" -ForegroundColor Green
+  needs:
+    - setup_ssh
+
+functional_testing:
+  stage: test
+  script:
+    - Write-Host "----------------Beginning test" -ForegroundColor Yellow
+    - |
+      ssh "${TARGET_USER}@${TARGET_HOST}" C:\Users\l1ds\group3\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME\test\testLoop.ps1 -CI_PROJECT_NAME $CI_PROJECT_NAME -CI_COMMIT_REF_NAME $CI_COMMIT_REF_NAME
+    - Write-Host "----------------Finished test" -ForegroundColor Green
+
+clear_docker:
+  stage: clear
+  rules:
+    - when: always
+  script:
+    # stop docker container, remove <internal release label> docker container and remove <internal release label> docker image
+    - ssh "${TARGET_USER}@${TARGET_HOST}" "docker stop $CI_PROJECT_NAME-$CI_COMMIT_REF_NAME"
+  #    - ssh "${TARGET_USER}@${TARGET_HOST}" "docker rm $CI_PROJECT_NAME-$CI_COMMIT_REF_NAME"
+  #    - ssh "${TARGET_USER}@${TARGET_HOST}" "docker rmi $CI_PROJECT_NAME_$CI_COMMIT_REF_NAME"
+  allow_failure: true
+
+#clear_folders:
+#  stage: clear
+#  script:
+#    # delete the l1ds/group3/<internal release label> folder
+#    - ssh "${TARGET_USER}@${TARGET_HOST}" "Remove-Item -Path 'C:\Users\l1ds\group3\$CI_PROJECT_NAME\$CI_COMMIT_REF_NAME' -Recurse -Force;"
+#  allow_failure: true
